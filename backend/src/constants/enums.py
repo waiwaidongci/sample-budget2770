@@ -1,2 +1,5 @@
 ROLES=('admin','analyst','viewer')
-STATES=('queued','running','completed','failed')
+STATES=('unlocked','locked','selected','unblinded','reviewed')
+SPLITS=('search','validation')
+ARMS=('control','treatment')
+VERDICTS=('can_expand','do_not_expand')

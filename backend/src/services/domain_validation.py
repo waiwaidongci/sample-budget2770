@@ -1,42 +1,65 @@
-import math
 from src.config.domain import DOMAIN
 
-def validate_values(values):
-    expected={f[0] for f in DOMAIN['fields']}
-    if set(values)!=expected: raise ValueError('字段必须为 '+', '.join(expected))
-    out={}
-    for key,label,kind in DOMAIN['fields']:
-        v=values[key]
-        if kind=='text':
-            if v not in ('A','B'): raise ValueError('工艺组必须为A或B')
-        else:
-            if isinstance(v,bool): raise ValueError(label+'必须是数值')
-            v=float(v)
-            if not math.isfinite(v) or abs(v)>1e9: raise ValueError(label+'必须为有限业务数值')
-            if v<0: raise ValueError(label+'不得为负')
-        out[key]=v
-    i=DOMAIN['index']
-    if i==0 and any(v>100 for v in out.values()): raise ValueError('百分比必须在0到100之间')
-    if i==1:
-        if any(out[k]!=int(out[k]) or out[k]>100000 for k in ('success','failure')): raise ValueError('计数必须为0到100000的整数')
-        if out['success']+out['failure']==0: raise ValueError('组内总数必须大于0')
-    if i==4:
-        if not 0<out['p0']<1 or not 0<out['p1']<1 or out['p0']==out['p1']: raise ValueError('两概率须在0和1之间且不同')
-        if out['cost_per_contact']<=0 or out['budget']<=0: raise ValueError('成本与预算须为正')
+SPLITS={x[0] for x in DOMAIN['splits']}
+ARMS={x[0] for x in DOMAIN['arms']}
+
+
+def text(value,label,limit):
+    if not isinstance(value,str): raise ValueError(label+'必须是文本')
+    value=value.strip()
+    if not value: raise ValueError(label+'不得为空')
+    if len(value)>limit: raise ValueError(label+f'不得超过{limit}个字符')
+    return value
+
+
+def clean_labels(raw):
+    if not isinstance(raw,list): raise ValueError('标签必须是数组')
+    if not 1<=len(raw)<=12: raise ValueError('每位成员须有1到12个标签')
+    labels=[]
+    for x in raw:
+        item=text(x,'标签',40)
+        if item not in labels: labels.append(item)
+    return sorted(labels)
+
+
+def clean_click(raw,label='点击'):
+    if raw is None: return None
+    if isinstance(raw,bool) or not isinstance(raw,(int,float)): raise ValueError(label+'必须是0或1')
+    if int(raw)!=raw or int(raw) not in (0,1): raise ValueError(label+'必须是0或1')
+    return int(raw)
+
+
+def clean_member(data):
+    source_key=text(data.get('source_key'),'成员编号',100)
+    labels=clean_labels(data.get('labels'))
+    split=data.get('split')
+    if split not in SPLITS: raise ValueError('锁定归属必须为搜寻集或复核集')
+    arm=data.get('arm')
+    if arm not in ARMS: raise ValueError('原分派必须为对照或处理')
+    click=clean_click(data.get('search_click'),'搜寻点击')
+    if split=='validation' and click is not None: raise ValueError('复核集成员不得携带搜寻点击')
+    return {'source_key':source_key,'labels':labels,'split':split,'arm':arm,'search_click':click}
+
+
+def clean_corrections(items):
+    if not items: raise ValueError('至少提交一条更正')
+    seen=set();out=[]
+    for item in items:
+        key=text(item.get('source_key'),'成员编号',100)
+        if key in seen: raise ValueError('更正记录中的成员编号重复：'+key)
+        seen.add(key)
+        click=clean_click(item.get('click'))
+        if click is None: raise ValueError('搜寻点击更正必须为0或1')
+        out.append((key,click))
     return out
 
-def validate_parameters(params):
-    defaults=DOMAIN['defaults']
-    if not isinstance(params,dict) or set(params)-set(defaults): raise ValueError('存在未知分析参数')
-    p=defaults|params
-    if 'field' in p and p['field'] not in [f[0] for f in DOMAIN['fields']]: raise ValueError('未知指标')
-    for key in ('resamples','simulations'):
-        if key in p:
-            v=p[key]
-            if isinstance(v,bool) or not isinstance(v,(int,float)) or int(v)!=v or not 200<=v<=20000: raise ValueError('重采样次数必须是200到20000的整数')
-            p[key]=int(v)
-    for key in ('alpha','power'):
-        if key in p:
-            p[key]=float(p[key])
-            if not math.isfinite(p[key]) or not (0.001<=p[key]<=0.2 if key=='alpha' else 0.5<=p[key]<=0.99): raise ValueError('显著性或功效超出范围')
-    return p
+
+def clean_reports(items):
+    if not items: raise ValueError('至少提交一条复核报告')
+    seen=set();out=[]
+    for item in items:
+        key=text(item.get('source_key'),'成员编号',100)
+        if key in seen: raise ValueError('复核报告中的成员编号重复：'+key)
+        seen.add(key)
+        out.append({'source_key':key,'click':clean_click(item.get('click'),'复核点击')})
+    return out

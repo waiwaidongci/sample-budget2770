@@ -1,17 +1,19 @@
-# 榆灯触达样本预算台
+# 榆灯重叠标签追加投放台
 
-内容触达基线点击率→最小可检测差异与预算→预注册方案；单双侧语义固定双侧，功效模拟固定seed。原生 HTML/CSS/JavaScript 多模块工作席，所有计算由 Python 完成。
+从重叠标签受众中找出值得追加投放的一群：开投前锁定每人的搜寻/复核归属、重叠标签和原分派，只用搜寻集选群，复核点击揭盲后按原分派计算差值与 95% 区间，页面以区间下限是否为正说明能否追加。原生 HTML/CSS/JavaScript 多模块工作席，所有统计由 Python 完成。
 
 ## 模拟业务
-榆灯研究协作组，12名分析师与业务人员，日常使用 `sample-budget-202611-1.csv` 手工抄表。当前三个痛点：观测与口径不可追溯、重算易出错、结果与复核割裂。上游提供独立合成业务观测；本应用接管数据登记、方法执行和输入冻结；下游负责人形成复测/预算方案，观察员获取复核后的CSV。
+榆灯研究协作组在日常投放复盘里手工比对重叠标签：同一用户常同时带着「冬季关注」「高活跃」等多个标签，凭直觉挑人群容易把复核后才出现的效果当成依据。上游提供带重叠标签的合成受众名单；本应用接管归属登记、开投前锁定、搜寻选群、复核补报、揭盲核算与预算决策；下游负责人据区间下限定追加与保留原预算。
 
-核心业务实体：CampaignPlan / BaselineScenario / PowerRun / BudgetDecision。源码 model/schema/service/controller/route 与前端 api/store/pages 完成链路，不依赖浏览器本地假数据。
+核心业务实体：CampaignPlan / AudienceMember / AudienceSelection / ValidationUnblind / BudgetDecision。源码 model/schema/service/controller/route 与前端 api/store/pages 完成链路，不依赖浏览器本地假数据。
 
 ## 功能与方法
-- 触达计划、基线情景录入/编辑/删除；重名记录与非法数值明确拒绝。
-- 两比例实验样本量正态近似与二项Monte Carlo功效验证。独立等样本双组、双侧正态近似。模拟功效用于检验近似；低事件率应谨慎采用，正式实验须另行预注册。
-- 每次运行冻结参数、观测和SHA256。Redis任务由独立worker计算，写DB与共享产物卷；输入修改不会改写历史结果。
-- 负责人复核不可覆盖；审计记录登录、数据改动、排队、复核与导出；240请求/分钟限流、全局可恢复错误。
+- 投放计划、受众成员批量录入/编辑/删除；重名与非法点击明确拒绝。
+- **开投前锁定**：每人的搜寻/复核归属、重叠标签、原分派一次冻结，生成归属 SHA256；锁定后成员表不可改。
+- **搜寻选群**：只用搜寻集点击，按重叠标签比较「处理−对照」点击率差，取差值最大者作为候选人群。搜寻点击可更正，更正后可改选，历史结论仍保留。
+- **复核揭盲**：只取一个完整复核批次，按开投前原分派汇总；补报在同批内覆盖旧值，已揭盲封存的批不再接收补报。缺报不记为零，列入缺报名单并排除。
+- **区间与决策**：Newcombe 混合得分区间给出差值 95% 区间，区间下限 > 0 才建议追加；无论结论如何原预算照常。揭盲结论与复核决定均不可覆盖。
+- 审计记录登录、成员录入、锁定、选群、更正、补报、揭盲、决定与导出；240 请求/分钟限流、全局可恢复错误。
 
 ## 快速启动
 ```bash
@@ -19,44 +21,44 @@ cp .env.example .env
 docker compose up -d --build
 docker compose exec -T backend python -m scripts.seed_demo
 ```
-访问 http://localhost:18244 ，API http://localhost:19244/docs 。数据库映射 17744。无需Node构建。可以从中文和带空格目录启动。清理 `docker compose down -v --remove-orphans` 会删除本题演示数据卷。
+访问 http://localhost:18244 ，API http://localhost:19244/docs 。数据库映射 17744。无需 Node 构建。可以从中文和带空格目录启动。`docker compose down -v --remove-orphans` 会删除演示数据卷。
 
 |角色|账号|密码|权限与典型动作|
 |---|---|---|---|
-|admin 负责人|admin@demo.local|Research2026!|全部读写、批准复核、下载|
-|analyst 分析师|analyst@demo.local|Research2026!|数据修改、创建任务、读取结果及下载；不能复核|
-|viewer 观察员|viewer@demo.local|Research2026!|只读；仅可导出已复核结果|
+|admin 负责人|admin@demo.local|Research2026!|全部读写、揭盲、归档复核、下载|
+|analyst 分析师|analyst@demo.local|Research2026!|成员录入、锁定、选群、复核补报、导出；不能揭盲|
+|viewer 观察员|viewer@demo.local|Research2026!|只读；仅可导出已复核结论|
 
 ## 一天的工作剧本
-1. 09:00 admin登录，查“榆灯·冬季专题”。
-2. 09:10 analyst核对 `sample-budget-202611-1.csv` 的seed记录。
-3. 09:15 来源录入页检查 `基线点击率 (0–1)` 等业务字段，必要时编辑。
-4. 09:20 分析执行页保留默认参数 `{"alpha": 0.05, "power": 0.8, "simulations": 10000}`，命名本轮研究。
-5. 09:21 冻结输入并排队，worker实算，结果页自动刷新。
-6. 09:25 阅读核心数值、方法边界、明细与SHA256；发现失败先修数据重跑。
-7. 09:35 admin打开业务复核，写明限制与下一步动作，归档后不可覆盖。
-8. 09:40 viewer读取复核意见并下载CSV，在操作留痕页核对下载事件。
+1. 09:00 admin 登录，查看「榆灯·冬季专题」当前阶段。
+2. 09:10 analyst 在来源录入页批量粘贴受众：成员编号、重叠标签、搜寻/复核归属、原分派、搜寻点击。
+3. 09:15 核对归属 SHA256 后点击锁定；成员表冻结。
+4. 09:20 在搜寻选群页读取逐标签点击率差，锁定最大差值标签。
+5. 09:35 复核点击陆续回收，按批次录入；缺报留空，不填零。
+6. 09:45 admin 对一个完整批次揭盲，页面显示原分派差值、95% 区间与缺报名单。
+7. 09:50 负责人按区间下限归档决策：下限为正则可追加，否则不加投；原预算照常。
+8. 10:00 viewer 下载已复核结论 CSV，在操作留痕页核对下载事件。
 
-seed是3个前瞻设计情景，每个计划1条基线/候选概率、成本和预算记录；本题用于实验前预算设计，不伪造实验后点击事件。预算与单位成本采用十进制除法向下取整，预计总成本四舍五入至分（ROUND_HALF_UP），避免0.6÷(0.1×2)浮点误差少算样本。预算每组触达上限200000；不足一次双组触达时预算可行样本数与功效均为0。
+seed 是 3 个前瞻设计计划，每个含 180 名合成受众（120 搜寻 / 60 复核，对照与处理各半），标签由固定种子 42 生成；本题用于开投前设计与流程演示，不伪造实验后因果结论。
 
 ## 技术与目录
 |部分|实现|
 |---|---|
-|前端|原生ES modules、HTML/CSS、Nginx1.27，无前端框架|
-|API|Python3.11、FastAPI0.115、SQLAlchemy2、JWT、PBKDF2密码|
-|计算|NumPy2.2、SciPy1.15，固定seed42|
-|数据库|PostgreSQL16|
-|任务|Redis7持久队列，Python独立worker，心跳healthcheck|
+|前端|原生 ES modules、HTML/CSS、Nginx1.27，无前端框架|
+|API|Python3.11、FastAPI0.115、SQLAlchemy2、JWT、PBKDF2 密码|
+|计算|SciPy1.15（Wilson / Newcombe 区间）|
+|数据库|PostgreSQL16（测试可用 SQLite）|
+|限流|Redis7 计数器，可选|
 
-`frontend/src/`分api、stores、types、components/common、hooks、pages、router、utils、constants；`backend/src/`分config、models、schemas、services、controllers、routes、middlewares、utils、constants；`backend/scripts/seed_demo.py`自然键插入、重复不覆盖修改；`backend/migrations/README.md`说明schema版本。
+`frontend/src/` 分 api、stores、types、components/common、hooks、pages、router、utils、constants；`backend/src/` 分 config、models、schemas、services、controllers、routes、middlewares、utils、constants；`backend/scripts/seed_demo.py` 自然键插入、重复不覆盖修改；`backend/migrations/README.md` 说明 schema 版本。
 
-环境变量 `.env.example`：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、DB_PASSWORD、JWT_SECRET、SEED_DEMO。开发时在本地venv安装backend/requirements.txt，设置DATABASE_URL、REDIS_URL、JWT_SECRET再运行uvicorn；前端开发经Nginx代理 `/api/` 到不带前缀的API。
+环境变量 `.env.example`：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、DB_PASSWORD、JWT_SECRET、SEED_DEMO。开发时在本地 venv 安装 backend/requirements.txt，设置 DATABASE_URL、REDIS_URL（可留空跳过限流）、JWT_SECRET 再运行 uvicorn；前端开发经 Nginx 代理 `/api/` 到不带前缀的 API。
 
-共享枚举：角色admin/analyst/viewer和队列queued/running/completed/failed；后端`src/constants/enums.py`、认证与worker使用相同值；前端`src/types/enums.js`、状态与角色界面使用相同值。Google Fonts：Noto Serif SC + IBM Plex Mono；断网使用serif/monospace回退。
+共享枚举：角色 admin/analyst/viewer，阶段 unlocked/locked/selected/unblinded/reviewed，归属 search/validation，原分派 control/treatment，结论 can_expand/do_not_expand；后端 `src/constants/enums.py` 与前端 `src/types/enums.js` 使用同值。Google Fonts：Noto Serif SC + IBM Plex Mono；断网使用 serif/monospace 回退。
 
-## 算法输入、失败态与复现
-输入为选定批次全部观测和参数，输出核心数值、明细、解释；参数经后端严格白名单和范围验证。独立等样本双组、双侧正态近似。模拟功效用于检验近似；低事件率应谨慎采用，正式实验须另行预注册。。空批次拒绝；不完整字段/非有限数/非法计数拒绝；常量相关列与不足样本使任务failed并保留错误。固定seed42、输入checksum相同可复现。独立oracle：功效随样本趋势；公式对norm.ppf；MDE零与越界概率拒绝。
+## 算法与复现
+选群只读搜寻集，逐标签统计各臂点击与人数，取「处理−对照」点击率差最大且两臂都有人的标签。揭盲只用被选标签的复核集成员与你指定的那一个批次；有报告但点击留空、或整份未报，都算缺报并排除，绝不补零。差值区间采用 Newcombe 混合得分法（两比例独立、按原分派分组），默认 95%。判定规则固定为区间下限 > 0 才建议追加，原预算照常。归属 SHA256 与搜寻指纹分别用于锁定校验和改选检测。
 
-已知边界：小型本地研究应用，使用合成数据，不含企业SSO与外发邮件；结果由人工复核，不自动执行业务决策；单worker恢复queued/running任务，数据库与Redis间未采用分布式事务。以当前测试目录TESTING.md记录实际验证结果。
+已知边界：小型本地研究应用，使用合成数据，不含企业 SSO 与外发邮件；结果由人工复核，不自动执行业务决策。开投后新增成员或改归属是不允许的，需要另建计划；未做多重比较校正，选群使用的搜寻集与揭盲使用的复核集分离即为方法边界。
 
 MIT License。
